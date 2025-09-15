@@ -1,0 +1,347 @@
+import React, { useMemo, useState } from "react";
+
+/**
+ * Minimal, single-file React app to generate equitable defensive lineups
+ * for youth baseball (13 players, 9 positions, 6 innings by default).
+ *
+ * No external UI libs required. Tailwind classes are included; if you don't
+ * use Tailwind, it's still readable.
+ */
+
+// ----- Types -----
+type Position = "P" | "C" | "1B" | "2B" | "3B" | "SS" | "LF" | "CF" | "RF";
+const INFIELD: Position[] = ["P", "C", "1B", "2B", "3B", "SS"];
+const OUTFIELD: Position[] = ["LF", "CF", "RF"];
+const ALL_POSITIONS: Position[] = [...INFIELD, ...OUTFIELD];
+
+interface Player {
+  id: string;
+  name: string;
+}
+
+interface Assignment { inning: number; position: Position; playerId: string }
+interface Bench { inning: number; playerIds: string[] }
+
+interface LineupSolution {
+  assignments: Assignment[];
+  bench: Bench[];
+  summary: {
+    inningsPerPlayer: Record<string, number>;
+    infieldOutfieldCoverage: Record<string, { infield: boolean; outfield: boolean }>;
+    positionCounts: Record<string, Partial<Record<Position, number>>>;
+    notices: string[];
+    hardConstraintSatisfied: boolean;
+  }
+}
+
+// ----- Utils -----
+const hashString = (s: string) => {
+  let h = 2166136261 >>> 0; // FNV-like simple hash
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+};
+
+function sortDeterministic<T>(arr: T[], key: (t: T) => string): T[] {
+  return [...arr].sort((a, b) => {
+    const ha = hashString(key(a));
+    const hb = hashString(key(b));
+    return ha - hb;
+  });
+}
+
+function chunk<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+// Simple helper to pick N by lowest score with stable ordering
+function pickLowest<T>(items: T[], n: number, score: (t: T) => number, tieKey: (t: T) => string): T[] {
+  return [...items]
+    .sort((a, b) => {
+      const d = score(a) - score(b);
+      if (d !== 0) return d;
+      return hashString(tieKey(a)) - hashString(tieKey(b));
+    })
+    .slice(0, n);
+}
+
+// ----- Generator -----
+interface GenerateOptions {
+  innings: number; // default 6
+}
+
+function generateLineup(playersIn: Player[], opts: GenerateOptions): LineupSolution {
+  const innings = Math.max(1, Math.floor(opts.innings || 6));
+  if (playersIn.length < 9) {
+    return {
+      assignments: [],
+      bench: [],
+      summary: {
+        inningsPerPlayer: {},
+        infieldOutfieldCoverage: {},
+        positionCounts: {},
+        notices: ["Need at least 9 players to field a team."],
+        hardConstraintSatisfied: false,
+      },
+    };
+  }
+
+  // Deterministic base order for fairness across runs
+  const players = sortDeterministic(playersIn, (p) => p.name.trim().toLowerCase());
+  const PIDS = players.map((p) => p.id);
+
+  // Tracking
+  const benchCount: Record<string, number> = Object.fromEntries(PIDS.map((id) => [id, 0]));
+  const inningsPlayed: Record<string, number> = Object.fromEntries(PIDS.map((id) => [id, 0]));
+  const ifPlayed: Record<string, boolean> = Object.fromEntries(PIDS.map((id) => [id, false]));
+  const ofPlayed: Record<string, boolean> = Object.fromEntries(PIDS.map((id) => [id, false]));
+  const posCounts: Record<string, Partial<Record<Position, number>>> = Object.fromEntries(
+    PIDS.map((id) => [id, {}])
+  );
+
+  const assignments: Assignment[] = [];
+  const benchList: Bench[] = [];
+  const notices: string[] = [];
+
+  // Working roster order that rotates each inning to vary who benches
+  let order = [...players];
+
+  for (let inning = 1; inning <= innings; inning++) {
+    // Choose 4 to bench this inning (lowest bench count; tiebreak by inningsPlayed)
+    const toBench = pickLowest(order, Math.max(0, order.length - 9), (p) => benchCount[p.id] * 10 + inningsPlayed[p.id], (p) => p.id);
+    const benchIds = new Set(toBench.map((p) => p.id));
+    benchList.push({ inning, playerIds: [...benchIds] });
+    for (const p of toBench) benchCount[p.id] += 1;
+
+    const onField = order.filter((p) => !benchIds.has(p.id));
+
+    // Assign infield first, prioritizing players who still need infield
+    const needIF = onField.filter((p) => !ifPlayed[p.id]);
+    const restIF = onField.filter((p) => ifPlayed[p.id]);
+    const ifPool = [...needIF, ...restIF];
+
+    const chosenIF = ifPool.slice(0, INFIELD.length);
+    const remainingForOF = onField.filter((p) => !chosenIF.includes(p));
+
+    // Assign outfield, prioritizing players who still need outfield
+    const needOF = remainingForOF.filter((p) => !ofPlayed[p.id]);
+    const restOF = remainingForOF.filter((p) => ofPlayed[p.id]);
+    const ofPool = [...needOF, ...restOF];
+
+    const chosenOF = ofPool.slice(0, OUTFIELD.length);
+
+    // Write assignments
+    for (let i = 0; i < INFIELD.length; i++) {
+      const player = chosenIF[i];
+      if (!player) break;
+      assignments.push({ inning, position: INFIELD[i], playerId: player.id });
+      inningsPlayed[player.id] += 1;
+      ifPlayed[player.id] = true;
+      posCounts[player.id][INFIELD[i]] = (posCounts[player.id][INFIELD[i]] || 0) + 1;
+    }
+    for (let i = 0; i < OUTFIELD.length; i++) {
+      const player = chosenOF[i];
+      if (!player) break;
+      assignments.push({ inning, position: OUTFIELD[i], playerId: player.id });
+      inningsPlayed[player.id] += 1;
+      ofPlayed[player.id] = true;
+      posCounts[player.id][OUTFIELD[i]] = (posCounts[player.id][OUTFIELD[i]] || 0) + 1;
+    }
+
+    // Rotate the overall order to vary next inning's bench candidates
+    order = [...order.slice(1), order[0]];
+  }
+
+  // Post-pass: try to fix anyone missing IF/OF by swapping in last inning
+  const lastInning = innings;
+  const lastInningAsmts = assignments.filter((a) => a.inning === lastInning);
+  const lastIF = lastInningAsmts.filter((a) => INFIELD.includes(a.position));
+  const lastOF = lastInningAsmts.filter((a) => OUTFIELD.includes(a.position));
+
+  const missingIF = PIDS.filter((id) => !ifPlayed[id]);
+  const missingOF = PIDS.filter((id) => !ofPlayed[id]);
+
+  function swapForCoverage(missingIds: string[], fromGroup: Assignment[], toGroup: Assignment[], setFlag: (id: string) => void) {
+    for (const miss of missingIds) {
+      // Find a candidate currently in the opposite group who already satisfied both IF & OF
+      const donor = toGroup.find((a) => ifPlayed[a.playerId] && ofPlayed[a.playerId]);
+      if (!donor) continue;
+      // Replace donor with the missing player (who was likely benched or in other group earlier)
+      const donorIdx = assignments.findIndex((x) => x.inning === lastInning && x.position === donor.position && x.playerId === donor.playerId);
+      if (donorIdx >= 0) {
+        assignments[donorIdx] = { ...assignments[donorIdx], playerId: miss };
+        setFlag(miss);
+        notices.push(`Swapped ${miss} into ${donor.position} in inning ${lastInning} to satisfy coverage.`);
+      }
+    }
+  }
+
+  if (missingIF.length)
+    swapForCoverage(missingIF, lastIF, lastOF, (id) => (ifPlayed[id] = true));
+  if (missingOF.length)
+    swapForCoverage(missingOF, lastOF, lastIF, (id) => (ofPlayed[id] = true));
+
+  const inningsPerPlayer = inningsPlayed;
+  const infieldOutfieldCoverage = Object.fromEntries(PIDS.map((id) => [id, { infield: !!ifPlayed[id], outfield: !!ofPlayed[id] }]));
+
+  const hardConstraintSatisfied = Object.values(infieldOutfieldCoverage).every((x) => x.infield && x.outfield);
+  if (!hardConstraintSatisfied) notices.push("Could not satisfy both infield & outfield for every player. Consider relaxing bench balance or edit manually.");
+
+  return {
+    assignments,
+    bench: benchList,
+    summary: {
+      inningsPerPlayer,
+      infieldOutfieldCoverage,
+      positionCounts: posCounts,
+      notices,
+      hardConstraintSatisfied,
+    },
+  };
+}
+
+// ----- UI -----
+const DEFAULT_NAMES = [
+  "Ava","Ben","Cam","Drew","Eli","Finn","Gia","Hana","Ike","Jae","Kai","Leo","Mia"
+];
+
+export default function App() {
+  const [namesInput, setNamesInput] = useState(DEFAULT_NAMES.join("\n"));
+  const [innings, setInnings] = useState(6);
+
+  const players: Player[] = useMemo(() => {
+    const lines = namesInput
+      .split(/\r?\n|,/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const unique = Array.from(new Set(lines));
+    return unique.map((name, idx) => ({ id: `p${idx + 1}`, name }));
+  }, [namesInput]);
+
+  const solution = useMemo(() => generateLineup(players, { innings }), [players, innings]);
+
+  const byInning: Record<number, Assignment[]> = useMemo(() => {
+    const map: Record<number, Assignment[]> = {};
+    for (const a of solution.assignments) {
+      if (!map[a.inning]) map[a.inning] = [];
+      map[a.inning].push(a);
+    }
+    for (const k of Object.keys(map)) map[+k].sort((a, b) => ALL_POSITIONS.indexOf(a.position) - ALL_POSITIONS.indexOf(b.position));
+    return map;
+  }, [solution]);
+
+  return (
+    <div className="min-h-screen bg-gray-50 text-gray-900 p-6">
+      <div className="max-w-6xl mx-auto space-y-6">
+        <header className="flex items-center justify-between">
+          <h1 className="text-2xl font-bold">⚾ Equitable Lineup Generator (Basic)</h1>
+        </header>
+
+        <section className="grid md:grid-cols-3 gap-4">
+          <div className="md:col-span-2 bg-white rounded-2xl shadow p-4 space-y-3">
+            <label className="block text-sm font-medium">Player Names (13 recommended)</label>
+            <textarea
+              className="w-full h-40 border rounded-lg p-2 focus:outline-none focus:ring"
+              placeholder="One name per line or comma-separated"
+              value={namesInput}
+              onChange={(e) => setNamesInput(e.target.value)}
+            />
+            <div className="flex items-center gap-3">
+              <label className="text-sm font-medium">Innings</label>
+              <input
+                type="number"
+                min={1}
+                max={7}
+                value={innings}
+                onChange={(e) => setInnings(Number(e.target.value))}
+                className="w-20 border rounded p-1"
+              />
+            </div>
+            <p className="text-sm text-gray-500">This basic model auto-balances bench and tries to ensure each player appears at least once in the infield and outfield across the game.</p>
+          </div>
+
+          <div className="bg-white rounded-2xl shadow p-4 space-y-2">
+            <h2 className="font-semibold">Summary</h2>
+            <div className="flex flex-wrap gap-2 text-sm">
+              <span className={`px-2 py-1 rounded-full ${solution.summary.hardConstraintSatisfied ? "bg-green-100 text-green-800" : "bg-yellow-100 text-yellow-800"}`}>
+                {solution.summary.hardConstraintSatisfied ? "All players have IF & OF" : "Coverage needs review"}
+              </span>
+              <span className="px-2 py-1 rounded-full bg-blue-100 text-blue-800">Players: {players.length}</span>
+              <span className="px-2 py-1 rounded-full bg-purple-100 text-purple-800">Innings: {innings}</span>
+            </div>
+            <div className="mt-2 space-y-1 text-sm">
+              {Object.entries(solution.summary.inningsPerPlayer).length > 0 && (
+                <details className="rounded border p-2">
+                  <summary className="cursor-pointer font-medium">Innings per player</summary>
+                  <ul className="grid grid-cols-2 gap-x-4 mt-2">
+                    {players.map((p) => (
+                      <li key={p.id} className="flex justify-between"><span>{p.name}</span><span>{solution.summary.inningsPerPlayer[p.id] ?? 0}</span></li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+              {solution.summary.notices.length > 0 && (
+                <details className="rounded border p-2">
+                  <summary className="cursor-pointer font-medium">Notices</summary>
+                  <ul className="list-disc ml-6 mt-2">
+                    {solution.summary.notices.map((n, i) => (
+                      <li key={i}>{n}</li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </div>
+          </div>
+        </section>
+
+        <section className="bg-white rounded-2xl shadow p-4">
+          <h2 className="font-semibold mb-3">Per-Inning Defensive Grid</h2>
+
+          <div className="overflow-auto">
+            <table className="min-w-full text-sm border border-gray-200">
+              <thead className="bg-gray-100">
+                <tr>
+                  <th className="px-2 py-2 text-left border">Inning</th>
+                  {ALL_POSITIONS.map((pos) => (
+                    <th key={pos} className="px-2 py-2 text-left border">{pos}</th>
+                  ))}
+                  <th className="px-2 py-2 text-left border">Bench</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Array.from({ length: innings }).map((_, idx) => {
+                  const inning = idx + 1;
+                  const row = byInning[inning] || [];
+                  const map = Object.fromEntries(row.map((a) => [a.position, a.playerId]));
+                  const bench = (solution.bench.find((b) => b.inning === inning)?.playerIds || []).map((id) => players.find((p) => p.id === id)?.name || id);
+                  return (
+                    <tr key={inning} className="odd:bg-white even:bg-gray-50">
+                      <td className="px-2 py-2 border font-medium">{inning}</td>
+                      {ALL_POSITIONS.map((pos) => (
+                        <td key={pos} className="px-2 py-2 border">
+                          {players.find((p) => p.id === map[pos])?.name || "—"}
+                        </td>
+                      ))}
+                      <td className="px-2 py-2 border">{bench.join(", ")}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <footer className="text-xs text-gray-500">
+          <p>
+            Tip: To progress this toward a coach-ready tool, add: pitcher/catcher inning caps,
+            per-inning availability, position eligibility, and a PDF export.
+          </p>
+        </footer>
+      </div>
+    </div>
+  );
+}
