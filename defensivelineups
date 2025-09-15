@@ -10,7 +10,7 @@ import React, { useMemo, useState } from "react";
 
 // ----- Types -----
 type Position = "P" | "C" | "1B" | "2B" | "3B" | "SS" | "LF" | "CF" | "RF";
-const INFIELD: Position[] = ["P", "C", "1B", "2B", "3B", "SS"];
+const INFIELD: Position[] = ["P", "C", "1B", "2B", "3B", "SS", "XYZ"];
 const OUTFIELD: Position[] = ["LF", "CF", "RF"];
 const ALL_POSITIONS: Position[] = [...INFIELD, ...OUTFIELD];
 
