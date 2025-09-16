@@ -10,7 +10,7 @@ import React, { useMemo, useState } from "react";
 
 // ----- Types -----
 type Position = "P" | "C" | "1B" | "2B" | "3B" | "SS" | "LF" | "CF" | "RF";
-const INFIELD: Position[] = ["P", "C", "1B", "2B", "3B", "SS"];
+const INFIELD: Position[] = ["P", "C", "1B", "2B", "3B", "SS", "XYZ"];
 const OUTFIELD: Position[] = ["LF", "CF", "RF"];
 const ALL_POSITIONS: Position[] = [...INFIELD, ...OUTFIELD];
 
@@ -74,18 +74,20 @@ interface GenerateOptions {
   innings: number; // default 6
 }
 
-function generateLineup(playersIn: Player[], opts: GenerateOptions): LineupSolution {
-  const innings = Math.max(1, Math.floor(opts.innings || 6));
-  if (playersIn.length < 9) {
-    return {
-      assignments: [],
-      bench: [],
-      summary: {
-        inningsPerPlayer: {},
-        infieldOutfieldCoverage: {},
-        positionCounts: {},
-        notices: ["Need at least 9 players to field a team."],
-        hardConstraintSatisfied: false,
+<input
+  type="number"
+  min={1}
+  max={9} // allow flexibility; adjust as you like
+  value={innings}
+  onChange={(e) => {
+    const v = Number(e.target.value);
+    // clamp + guard against NaN
+    const safe = Number.isFinite(v) ? Math.min(9, Math.max(1, Math.floor(v))) : 6;
+    setInnings(safe);
+  }}
+  className="w-20 border rounded p-1"
+/>
+
       },
     };
   }
