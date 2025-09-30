@@ -1,0 +1,90 @@
+// --- 1. Update the Player type ---
+type Position = "P" | "C" | "1B" | "2B" | "3B" | "SS" | "LF" | "CF" | "RF";
+interface Player {
+  id: string;
+  name: string;
+  eligiblePositions: Position[]; // NEW
+}
+
+// --- 2. Update how players are created from namesInput ---
+const DEFAULT_NAMES = [
+  "Ava","Ben","Cam","Drew","Eli","Finn","Gia","Hana","Ike","Jae","Kai","Leo","Mia"
+];
+const ALL_POSITIONS: Position[] = ["P", "C", "1B", "2B", "3B", "SS", "LF", "CF", "RF"];
+
+function defaultEligiblePositions(): Position[] {
+  // For now, everyone is eligible for everything
+  return [...ALL_POSITIONS];
+}
+
+const [namesInput, setNamesInput] = useState(DEFAULT_NAMES.join("\n"));
+const [players, setPlayers] = useState<Player[]>([]);
+
+useEffect(() => {
+  const lines = namesInput
+    .split(/\r?\n|,/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const unique = Array.from(new Set(lines));
+  setPlayers(
+    unique.map((name, idx) => ({
+      id: `p${idx + 1}`,
+      name,
+      eligiblePositions: defaultEligiblePositions(),
+    }))
+  );
+}, [namesInput]);
+
+// --- 3. Basic UI to select eligible positions for each player ---
+function EligiblePositionSelector({ player, onChange }: { player: Player; onChange: (positions: Position[]) => void }) {
+  return (
+    <div className="flex flex-wrap gap-2">
+      {ALL_POSITIONS.map((pos) => (
+        <label key={pos} className="flex items-center gap-1">
+          <input
+            type="checkbox"
+            checked={player.eligiblePositions.includes(pos)}
+            onChange={e => {
+              if (e.target.checked) {
+                onChange([...player.eligiblePositions, pos]);
+              } else {
+                onChange(player.eligiblePositions.filter(p => p !== pos));
+              }
+            }}
+          />
+          <span>{pos}</span>
+        </label>
+      ))}
+    </div>
+  );
+}
+
+// --- 4. Render EligiblePositionSelector in your UI ---
+{players.map((player, idx) => (
+  <div key={player.id} className="border rounded p-2 mb-2">
+    <div className="font-semibold">{player.name}</div>
+    <EligiblePositionSelector
+      player={player}
+      onChange={newPositions => {
+        setPlayers(players =>
+          players.map((p, i) => i === idx ? { ...p, eligiblePositions: newPositions } : p)
+        );
+      }}
+    />
+  </div>
+))}
+
+// --- 5. Update generateLineup to respect eligible positions ---
+function generateLineup(players: Player[], options: GenerateOptions): LineupSolution {
+  // ... rest of your logic ...
+  // When assigning positions, filter by eligibility:
+  const ifPool = onField.filter((p) => p.eligiblePositions.some(pos => INFIELD.includes(pos)));
+  const chosenIF = [];
+  for (let pos of INFIELD) {
+    const candidate = ifPool.find(p => p.eligiblePositions.includes(pos) && !chosenIF.includes(p));
+    if (candidate) {
+      chosenIF.push(candidate);
+    }
+  }
+  // Repeat for outfield and bench logic...
+}
